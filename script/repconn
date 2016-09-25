@@ -1,0 +1,279 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use utf8;
+
+use IO::Socket;
+use Encode qw(encode decode);
+use Time::HiRes qw(ualarm);
+
+use Data::Dump qw(dd pp);
+
+my $HOST = $ENV{REPCONN_NREPL_HOST} || '127.0.0.1';
+my $PORT = $ENV{REPCONN_NREPL_PORT} or die("REPCONN_NREPL_PORT not defined");
+
+
+##
+
+sub request {
+    my ($payload) = @_;
+
+    my $sock = IO::Socket::INET->new(
+        Proto   => "tcp",
+        PeerAddr => $HOST,
+        PeerPort  => $PORT,
+   ) || die "cannot connect to nrepl server on $HOST:$PORT";
+
+    $sock->autoflush(1);
+
+    print $sock bencode($payload);
+
+    my $response = [];
+
+    my $poll_timeout = 0;
+
+    eval {
+        local $SIG{ALRM} = sub { die "alarm\n" };
+
+        while (1) {
+
+            #FIXME better method to detect when server is done sending responses
+            ualarm $poll_timeout if $poll_timeout;
+
+            # First roune blocks until we can start parsing response.
+            # After that we wait for $poll_timeout
+            read $sock, my $byte, 1;
+
+            # rest shouldn't take more than 30 seconds
+            alarm 30;
+            my $msg = bdecode($sock, $byte);
+            alarm 0;
+
+            # if we are reading stdout, give more time
+            $poll_timeout = defined $msg->{out} ? 0 : 10000; #microseconds
+
+            push @$response, $msg;
+        }
+    };
+    if ($@) {
+        die $@ unless $@ eq "alarm\n";   # propagate unexpected errors
+    }
+
+    $sock->shutdown(2);
+
+    close $sock;
+
+    return $response;
+}
+
+
+# Simplified version, we only need to encode hashes
+sub bencode {
+    my ($in) = @_;
+
+    my $out = '';
+    foreach (sort keys %$in) {
+        $out .= length($_)        . ':' . $_;
+        $out .= length($in->{$_}) . ':' . $in->{$_};
+    }
+    return 'd' . $out . 'e';
+}
+
+
+sub bdecode {
+    my ($stream, $byte) = @_;
+
+    # skip reading here if we have peeked the next byte
+    unless (defined $byte) {
+        read $stream, $byte, 1;
+    }
+
+    if ($byte eq 'd') { # HASH
+        my $chunk = {};
+        while (1) {
+            read $stream, $byte, 1;
+            last if $byte eq 'e';
+
+            my $key        = bdecode($stream, $byte);
+            $chunk->{$key} = bdecode($stream);
+        }
+        return $chunk;
+    }
+    elsif ($byte eq 'l') { # ARRAY
+        my $chunk = [];
+        while (1) {
+            read $stream, $byte, 1;
+            last if $byte eq 'e';
+
+            push @$chunk, bdecode($stream, $byte);
+        }
+        return $chunk;
+    }
+    elsif ($byte eq 'i') { # INTEGER
+        my $chunk = '';
+        while (1) {
+            read $stream, $byte, 1;
+            last if $byte eq 'e';
+
+            $chunk .= $byte
+        }
+        return int $chunk;
+    }
+    elsif ($byte =~ /[0-9]/) { # STRING
+        my $rsize = '';
+        while ($byte ne ':') {
+            $rsize .= $byte;
+            read $stream, $byte, 1;
+        }
+        my $str = '';
+        while ($rsize > 0) {
+            my $len = read( $stream, my $chunk, $rsize );
+            $str   .= $chunk;
+            $rsize -= $len;
+        }
+        return $str;
+    }
+}
+
+
+sub nrepl_clone {
+    my $res = request({op => 'clone'});
+    $res->[0]->{'new-session'};
+}
+
+sub nrepl_close {
+    my ($sess) = @_;
+    request({op => 'close', session => $sess});
+}
+
+sub nrepl_input {
+    my ($sess, $input) = @_;
+    request({op => 'stdin', session => $sess, stdin => $input});
+}
+
+sub nrepl_eval {
+    my ($sess, $code) = @_;
+
+    my $res = request({op => 'eval', session => $sess, code => encode('UTF-8', $code)});
+
+    foreach my $r (@$res) {
+        print $r->{out} if defined $r->{out};
+
+        #TODO better formatting, fix socket exceptions
+        if (defined $r->{ex} && $r->{ex} !~ /SocketException/) {
+            warn pp(nrepl_trace($sess)), "\n";
+            die $r->{ex}, "\n";
+        }
+    }
+}
+
+sub nrepl_trace {
+    my ($sess) = @_;
+    request({op => 'stacktrace', session => $sess});
+}
+
+sub nrepl_sigint {
+    my ($sess) = @_;
+    request({op => 'interrupt', session => $sess});
+}
+
+
+sub read_code {
+
+    my $script = shift @ARGV;
+
+    my $code;
+
+    if ($script && -f $script) {
+        open my $fh, '<', $script or die "failed to open $script: $!";
+        my @line;
+        while (<$fh>) {
+            s/;.*//;
+            push @line, $_;
+        }
+        close $fh;
+
+        if (@line) {
+            shift @line if $line[0] =~ /^#!/;
+            $code = join '', @line;
+        }
+    }
+    return $code;
+}
+
+
+sub run {
+
+    my $code = read_code();
+
+    return unless $code;
+
+    # Start fresh repl session
+
+    my $sess = nrepl_clone();
+
+    # Read STDIN
+
+    unless (-t STDIN) {
+        my $input = '';
+        while (<STDIN>) {
+            $input .= $_;
+        }
+        nrepl_input($sess, $input);
+    }
+
+    # helper seq for stdin
+    nrepl_eval($sess, '(import java.io.BufferedReader)');
+    nrepl_eval($sess, '(def <stdin> (line-seq (java.io.BufferedReader. *in*)))');
+
+    # Setup argument list
+
+    if (@ARGV) {
+        my @out = map { quotemeta decode('UTF-8', $_) } @ARGV;
+        my $argv_def = '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
+        nrepl_eval($sess, $argv_def);
+    }
+
+    # Trap ctrl-c
+    # Try to interrupt evaluation before exiting
+
+    $SIG{INT} = sub {
+        nrepl_sigint($sess);
+        die "\n";
+    };
+
+    # Read and evaluate s-expressions
+
+    my $sexp = '';
+    my $depth = 0;
+    foreach my $byte (split '', $code) {
+
+        if ($byte eq '(') {
+            $sexp .= '(';
+            $depth++;
+        }
+        elsif ($byte eq ')') {
+            $sexp .= ')';
+            $depth--;
+        }
+        elsif ($depth) {
+            $sexp .= $byte;
+        }
+
+        if ($sexp && $depth == 0) {
+            nrepl_eval($sess, $sexp);
+
+            $sexp = '';
+        }
+    }
+
+    # Close and clean up
+
+    nrepl_close($sess);
+}
+
+##
+
+run();
+
+1;
