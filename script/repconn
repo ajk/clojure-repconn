@@ -277,20 +277,22 @@ sub run {
         while (<STDIN>) {
             $input .= $_;
         }
+        warn length $input if $DEBUG;
         nrepl_input($sess, $input);
     }
 
-    # helper seq for stdin
-    nrepl_eval($sess, '(import java.io.BufferedReader)');
-    nrepl_eval($sess, '(def <stdin> (line-seq (java.io.BufferedReader. *in*)))');
+    # Inject helper seq for stdin
+    nrepl_eval($sess, '(import java.io.BufferedReader)(def <stdin> (line-seq (java.io.BufferedReader. *in*)))');
 
     # Setup argument list
 
-    if (@ARGV) {
-        my @out = map { quotemeta decode('UTF-8', $_) } @ARGV;
-        my $argv_def = '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
-        nrepl_eval($sess, $argv_def);
-    }
+    my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
+    my $argv_def = '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
+
+    warn $argv_def if $DEBUG;
+
+    nrepl_eval($sess, $argv_def);
+
 
     # Trap ctrl-c
     # Try to interrupt evaluation before exiting
