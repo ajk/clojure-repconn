@@ -59,7 +59,7 @@ sub request {
             #FIXME better method to detect when server is done sending responses
             ualarm $poll_timeout if $poll_timeout;
 
-            # First roune blocks until we can start parsing response.
+            # First round blocks until we can start parsing response.
             # After that we wait for $poll_timeout
             read $sock, my $byte, 1;
 
