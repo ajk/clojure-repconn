@@ -35,7 +35,7 @@ my $DEBUG = 0;
 ##
 
 sub request {
-    my ($payload) = @_;
+    my ($payload, $multi) = @_;
 
     my $sock = IO::Socket::INET->new(
         Proto   => "tcp",
@@ -59,7 +59,7 @@ sub request {
             #FIXME better method to detect when server is done sending responses
             ualarm $poll_timeout if $poll_timeout;
 
-            # First round blocks until we can start parsing response.
+            # First time we block until we can start parsing response.
             # After that we wait for $poll_timeout
             read $sock, my $byte, 1;
 
@@ -72,6 +72,9 @@ sub request {
             $poll_timeout = defined $msg->{out} ? 0 : 10000; #microseconds
 
             push @$response, $msg;
+
+            # stop here unless we expect multipart response
+            last unless $multi;
         }
     };
     if ($@) {
@@ -172,9 +175,9 @@ sub nrepl_input {
 }
 
 sub nrepl_eval {
-    my ($sess, $code) = @_;
+    my ($sess, $code, $multi) = @_;
 
-    my $res = request({op => 'eval', session => $sess, code => encode('UTF-8', $code)});
+    my $res = request({op => 'eval', session => $sess, code => encode('UTF-8', $code)}, $multi);
 
     foreach my $r (@$res) {
         print $r->{out} if defined $r->{out};
@@ -301,7 +304,7 @@ sub run {
 
     foreach (@sexp) {
         warn $_ if $DEBUG;
-        nrepl_eval($sess, $_);
+        nrepl_eval($sess, $_, 1);
     }
 
     # Close and clean up
