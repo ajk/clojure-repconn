@@ -30,6 +30,7 @@ use Data::Dump qw(dd pp);
 my $HOST = $ENV{REPCONN_NREPL_HOST} || '127.0.0.1';
 my $PORT = $ENV{REPCONN_NREPL_PORT} or die("REPCONN_NREPL_PORT not defined");
 
+my $DEBUG = 0;
 
 ##
 
@@ -153,6 +154,7 @@ sub bdecode {
     }
 }
 
+##
 
 sub nrepl_clone {
     my $res = request({op => 'clone'});
@@ -195,36 +197,71 @@ sub nrepl_sigint {
     request({op => 'interrupt', session => $sess});
 }
 
+##
 
 sub read_code {
 
-    my $script = shift @ARGV;
+    my $input = shift @ARGV;
 
-    my $code;
-
-    if ($script && -f $script) {
-        open my $fh, '<', $script or die "failed to open $script: $!";
-        my @line;
-        while (<$fh>) {
-            s/;.*//;
-            push @line, $_;
-        }
-        close $fh;
-
-        if (@line) {
-            shift @line if $line[0] =~ /^#!/;
-            $code = join '', @line;
-        }
+    my $fh;
+    if ($input && -f $input) {
+        # input from file
+        open $fh, '<', $input or die "failed to open $input: $!";
     }
-    return $code;
+    elsif ( ! -t STDIN) {
+        # input from pipe
+        $fh = *STDIN;
+    }
+    elsif ($input) {
+        # input from first argument
+        open $fh, '<', \$input;
+    }
+
+    return unless $fh;
+
+    my (@sexp, $chunk, $depth, $byte, $prev, $in_string);
+    while (read $fh, $byte, 1) {
+
+        if ($byte eq '"') {
+            $in_string = ! $in_string unless $prev && $prev eq "\\";
+            $chunk .= $byte;
+        }
+        elsif ($byte eq ';' && ! $in_string) {
+            while (1) {
+                read($fh, $byte, 1);
+                last if $byte eq "\n";
+            }
+        }
+        elsif ($byte eq '(' && ! $in_string) {
+            $depth++;
+            $chunk .= $byte;
+        }
+        elsif ($byte eq ')' && ! $in_string) {
+            $depth--;
+            $chunk .= $byte;
+        }
+        elsif ($depth) {
+            $chunk .= $byte;
+        }
+
+        if ($chunk && ! $depth) {
+            push @sexp, $chunk;
+            $chunk = '';
+        }
+        $prev = $byte;
+    }
+
+    return @sexp;
 }
 
+##
 
 sub run {
 
-    my $code = read_code();
+    my @sexp = read_code();
 
-    return unless $code;
+    return unless @sexp;
+
 
     # Start fresh repl session
 
@@ -260,37 +297,17 @@ sub run {
         die "\n";
     };
 
-    # Read and evaluate s-expressions
+    # Evaluate s-expressions
 
-    my $sexp = '';
-    my $depth = 0;
-    foreach my $byte (split '', $code) {
-
-        if ($byte eq '(') {
-            $sexp .= '(';
-            $depth++;
-        }
-        elsif ($byte eq ')') {
-            $sexp .= ')';
-            $depth--;
-        }
-        elsif ($depth) {
-            $sexp .= $byte;
-        }
-
-        if ($sexp && $depth == 0) {
-            nrepl_eval($sess, $sexp);
-
-            $sexp = '';
-        }
+    foreach (@sexp) {
+        warn $_ if $DEBUG;
+        nrepl_eval($sess, $_);
     }
 
     # Close and clean up
 
     nrepl_close($sess);
 }
-
-##
 
 run();
 
