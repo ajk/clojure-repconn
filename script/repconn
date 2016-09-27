@@ -23,7 +23,7 @@ use utf8;
 
 use IO::Socket;
 use Encode qw(encode decode);
-use Time::HiRes qw(ualarm);
+use Time::HiRes qw(time ualarm);
 
 use Data::Dump qw(dd pp);
 
@@ -34,6 +34,12 @@ my $DEBUG = 0;
 
 ##
 
+my $started = time();
+sub _log {
+    my $now = time - $started;
+    warn $now, "\t", join(' ', @_), "\n";
+}
+
 sub request {
     my ($payload, $multi) = @_;
 
@@ -41,7 +47,7 @@ sub request {
         Proto   => "tcp",
         PeerAddr => $HOST,
         PeerPort  => $PORT,
-   ) || die "cannot connect to nrepl server on $HOST:$PORT";
+    ) || die "cannot connect to nrepl server on $HOST:$PORT";
 
     $sock->autoflush(1);
 
@@ -69,7 +75,7 @@ sub request {
             alarm 0;
 
             # if we are reading stdout, give more time
-            $poll_timeout = defined $msg->{out} ? 0 : 10000; #microseconds
+            $poll_timeout = (ref $msg eq 'HASH' && defined $msg->{out}) ? 0 : 10000; #microseconds
 
             push @$response, $msg;
 
@@ -157,50 +163,6 @@ sub bdecode {
     }
 }
 
-##
-
-sub nrepl_clone {
-    my $res = request({op => 'clone'});
-    $res->[0]->{'new-session'};
-}
-
-sub nrepl_close {
-    my ($sess) = @_;
-    request({op => 'close', session => $sess});
-}
-
-sub nrepl_input {
-    my ($sess, $input) = @_;
-    request({op => 'stdin', session => $sess, stdin => $input});
-}
-
-sub nrepl_eval {
-    my ($sess, $code, $multi) = @_;
-
-    my $res = request({op => 'eval', session => $sess, code => encode('UTF-8', $code)}, $multi);
-
-    foreach my $r (@$res) {
-        print $r->{out} if defined $r->{out};
-
-        #TODO better formatting, fix socket exceptions
-        if (defined $r->{ex} && $r->{ex} !~ /SocketException/) {
-            warn pp(nrepl_trace($sess)), "\n";
-            die $r->{ex}, "\n";
-        }
-    }
-}
-
-sub nrepl_trace {
-    my ($sess) = @_;
-    request({op => 'stacktrace', session => $sess});
-}
-
-sub nrepl_sigint {
-    my ($sess) = @_;
-    request({op => 'interrupt', session => $sess});
-}
-
-##
 
 sub read_code {
 
@@ -259,26 +221,78 @@ sub read_code {
 
 ##
 
+sub nrepl_clone {
+    my $res = request({op => 'clone'});
+    $res->[0]->{'new-session'};
+}
+
+sub nrepl_close {
+    my ($sess) = @_;
+    request({op => 'close', session => $sess});
+}
+
+sub nrepl_input {
+    my ($sess, $input) = @_;
+    request({op => 'stdin', session => $sess, stdin => $input});
+}
+
+sub nrepl_eval {
+    my ($sess, $code, $multi) = @_;
+
+    my $res = request({op => 'eval', session => $sess, code => encode('UTF-8', $code)}, $multi);
+
+    foreach my $r (@$res) {
+        print $r->{out} if defined $r->{out};
+
+        #TODO better formatting, fix socket exceptions
+        if (defined $r->{ex} && $r->{ex} !~ /SocketException/) {
+            warn pp(nrepl_trace($sess)), "\n";
+            die $r->{ex}, "\n";
+        }
+    }
+}
+
+sub nrepl_trace {
+    my ($sess) = @_;
+    request({op => 'stacktrace', session => $sess});
+}
+
+sub nrepl_sigint {
+    my ($sess) = @_;
+    request({op => 'interrupt', session => $sess});
+    nrepl_close($sess);
+    die "\n";
+}
+
+##
+
 sub run {
 
     my @sexp = read_code();
 
     return unless @sexp;
 
+    $DEBUG and _log('parsed', scalar @sexp, 's-expressions');
 
     # Start fresh repl session
 
     my $sess = nrepl_clone();
 
+    # Trap ctrl-c
+    # Try to interrupt evaluation before exiting
+
+    $SIG{INT} = sub {
+        nrepl_sigint($sess);
+    };
+
+    $DEBUG and _log('connected to nREPL server, session id', $sess);
+
     # Read STDIN
 
     unless (-t STDIN) {
-        my $input = '';
-        while (<STDIN>) {
-            $input .= $_;
-        }
-        warn length $input if $DEBUG;
-        nrepl_input($sess, $input);
+        my @input = <STDIN>;
+        nrepl_input($sess, join('', @input));
+        $DEBUG and _log('got', scalar @input, 'lines from STDIN' );
     }
 
     # Inject helper seq for stdin
@@ -289,29 +303,23 @@ sub run {
     my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
     my $argv_def = '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
 
-    warn $argv_def if $DEBUG;
-
     nrepl_eval($sess, $argv_def);
 
-
-    # Trap ctrl-c
-    # Try to interrupt evaluation before exiting
-
-    $SIG{INT} = sub {
-        nrepl_sigint($sess);
-        die "\n";
-    };
+    $DEBUG and _log('setup done');
 
     # Evaluate s-expressions
 
     foreach (@sexp) {
-        warn $_ if $DEBUG;
+        $DEBUG and _log('evaluating:');
+        $DEBUG and warn $_, "\n";
         nrepl_eval($sess, $_, 1);
     }
 
     # Close and clean up
 
     nrepl_close($sess);
+
+    $DEBUG and _log('finished');
 }
 
 run();
