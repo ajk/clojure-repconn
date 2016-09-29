@@ -21,6 +21,8 @@ use strict;
 use warnings;
 use utf8;
 
+use Fcntl;
+use POSIX;
 use IO::Socket;
 use Encode qw(encode decode);
 use Time::HiRes qw(time ualarm);
@@ -31,6 +33,9 @@ my $HOST = $ENV{REPCONN_NREPL_HOST} || '127.0.0.1';
 my $PORT = $ENV{REPCONN_NREPL_PORT} or die("REPCONN_NREPL_PORT not defined");
 
 my $DEBUG = 0;
+
+# see if we need to read stdin
+my $TTY = -t STDIN;
 
 ##
 
@@ -101,8 +106,10 @@ sub bencode {
 
     my $out = '';
     foreach (sort keys %$in) {
+        my $v = $in->{$_};
+        $v = $$v if ref $v eq 'SCALAR';
         $out .= length($_)        . ':' . $_;
-        $out .= length($in->{$_}) . ':' . $in->{$_};
+        $out .= length($v) . ':' . $v;
     }
     return 'd' . $out . 'e';
 }
@@ -173,9 +180,12 @@ sub read_code {
         # input from file
         open $fh, '<', $input or die "failed to open $input: $!";
     }
-    elsif ( ! -t STDIN) {
+    elsif ( ! $TTY) {
         # input from pipe
         $fh = *STDIN;
+
+        # if we read code from stdin, we don't have anything coming in from user
+        $TTY = 1;
     }
     elsif ($input) {
         # input from first argument
@@ -244,10 +254,10 @@ sub nrepl_eval {
     foreach my $r (@$res) {
         print $r->{out} if defined $r->{out};
 
-        #TODO better formatting, fix socket exceptions
-        if (defined $r->{ex} && $r->{ex} !~ /SocketException/) {
-            warn pp(nrepl_trace($sess)), "\n";
-            die $r->{ex}, "\n";
+        #TODO better stack trace formatting
+        if (defined $r->{ex}) {
+            my $tr = nrepl_trace($sess);
+            warn $tr->[0]->{class} . ' ' . $tr->[0]->{message} . "\n";
         }
     }
 }
@@ -261,7 +271,6 @@ sub nrepl_sigint {
     my ($sess) = @_;
     request({op => 'interrupt', session => $sess});
     nrepl_close($sess);
-    die "\n";
 }
 
 ##
@@ -278,44 +287,115 @@ sub run {
 
     my $sess = nrepl_clone();
 
+    $DEBUG and _log('connected to nREPL server, session id', $sess);
+
+    # Setup STDIN and STDOUT
+
+    my $in_fifo  = '/tmp/repconn-' . $started . '-' . $$ . '-in';
+    my $out_fifo = '/tmp/repconn-' . $started . '-' . $$ . '-out';
+
+    foreach ($out_fifo, $in_fifo) {
+        unless (-p $_) { # not a pipe
+            if (-e _) {
+                # but a something else
+                die "won't overwrite $_\n";
+            } else {
+                POSIX::mkfifo($_, 0666) || die "can't mknod $_: $!";
+            }
+        }
+    }
+
+    my $in_pid = fork();
+    die "failed to fork" unless defined $in_pid;
+
+    unless ($in_pid) {
+        unless ( $TTY ) {
+            sysopen(my $fh, $in_fifo, O_WRONLY) || die "can't write $in_fifo: $!";
+            while (<STDIN>) {
+                print $fh $_;
+            }
+            close $fh;
+        }
+        exit(0);
+    }
+
+    my $out_pid = fork();
+    die "failed to fork" unless defined $out_pid;
+
+    unless ($out_pid) {
+        sysopen(my $fh, $out_fifo, O_RDONLY) || die "can't read $out_fifo: $!";
+        while (<$fh>) {
+            last if /^\\cD\s*$/; # look for EOF
+            print $_;
+        }
+        close $fh;
+        exit(0);
+    }
+
+    close STDIN;
+    close STDOUT;
+
     # Trap ctrl-c
     # Try to interrupt evaluation before exiting
 
     $SIG{INT} = sub {
+
         nrepl_sigint($sess);
+
+        kill 'KILL', $in_pid unless $TTY;
+        kill 'KILL', $out_pid;
+
+        unlink($in_fifo, $out_fifo);
+
+        die "\n";
     };
 
-    $DEBUG and _log('connected to nREPL server, session id', $sess);
+    # Evaluate s-expressions
 
-    # Read STDIN
-
-    unless (-t STDIN) {
-        my @input = <STDIN>;
-        nrepl_input($sess, join('', @input));
-        $DEBUG and _log('got', scalar @input, 'lines from STDIN' );
+    my $ns = shift @sexp;
+    unless ($ns =~ /^\(\s*ns /) {
+        unshift @sexp, $ns;
+        $ns = "(ns user)";
     }
 
-    # Inject helper seq for stdin
-    nrepl_eval($sess, '(import java.io.BufferedReader)(def <stdin> (line-seq (java.io.BufferedReader. *in*)))');
+    # Pass our named pipes and argv to nREPL
+    # if $TTY == 1 we don't bind *in*
+    #
+    unshift @sexp, "(binding [*in* repconn-stdin]" unless $TTY;
+    unshift @sexp, "(binding [*out* repconn-stdout]";
+    push    @sexp, '(println "\\\\cD")';
+    push    @sexp, ")";
+    push    @sexp, ")" unless $TTY;
+
+    @sexp = ( join('', @sexp) );
+
+    unshift @sexp, "(def repconn-stdout (clojure.java.io/writer \"$out_fifo\"))";
+    unshift @sexp, "(def repconn-stdin  (clojure.java.io/reader \"$in_fifo\"))" unless $TTY;
+    unshift @sexp, "(require 'clojure.java.io)";
 
     # Setup argument list
 
     my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
-    my $argv_def = '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
+    unshift @sexp, '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
 
-    nrepl_eval($sess, $argv_def);
+    push @sexp, "(.close repconn-stdout)";
+    push @sexp, "(.close repconn-stdin)" unless $TTY;
+
+    unshift @sexp, $ns;
 
     $DEBUG and _log('setup done');
 
-    # Evaluate s-expressions
+    # Execute!
 
     foreach (@sexp) {
-        $DEBUG and _log('evaluating:');
         $DEBUG and warn $_, "\n";
-        nrepl_eval($sess, $_, 1);
+        nrepl_eval($sess, $_);
     }
 
-    # Close and clean up
+    waitpid($in_pid, 0);
+    waitpid($out_pid, 0);
+
+    unlink($in_fifo, $out_fifo);
 
     nrepl_close($sess);
 
