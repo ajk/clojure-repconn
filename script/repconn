@@ -27,7 +27,7 @@ use IO::Socket;
 use Encode qw(encode decode);
 use Time::HiRes qw(time ualarm);
 
-use Data::Dump qw(dd pp);
+use Data::Dumper;
 
 my $PORT = $ENV{REPCONN_NREPL_PORT} or die("REPCONN_NREPL_PORT not defined");
 
