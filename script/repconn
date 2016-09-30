@@ -31,7 +31,7 @@ use Data::Dumper;
 
 my $PORT = $ENV{REPCONN_NREPL_PORT} or die("REPCONN_NREPL_PORT not defined");
 
-my $DEBUG = 0;
+my $DEBUG = $ENV{REPCONN_DEBUG};
 
 # see if we need to read stdin
 my $TTY = -t STDIN;
