@@ -29,7 +29,6 @@ use Time::HiRes qw(time ualarm);
 
 use Data::Dump qw(dd pp);
 
-my $HOST = $ENV{REPCONN_NREPL_HOST} || '127.0.0.1';
 my $PORT = $ENV{REPCONN_NREPL_PORT} or die("REPCONN_NREPL_PORT not defined");
 
 my $DEBUG = 0;
@@ -50,9 +49,9 @@ sub request {
 
     my $sock = IO::Socket::INET->new(
         Proto   => "tcp",
-        PeerAddr => $HOST,
+        PeerAddr => 'localhost',
         PeerPort  => $PORT,
-    ) || die "cannot connect to nrepl server on $HOST:$PORT";
+    ) || die "cannot connect to nrepl server on port $PORT";
 
     $sock->autoflush(1);
 
