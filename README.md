@@ -4,15 +4,109 @@ repconn - a super simple Clojure nREPL client.
 
 # RATIONALE
 
+> This is the Unix philosophy: Write programs that do one thing and do it well.
+> Write programs to work together. Write programs to handle text streams,
+> because that is a universal interface.
+>
+> \- Douglas McIlroy
+
+
+One pain point in Clojure programming and JVM in general is the slow
+startup time. Compiling and running even small programs feels sluggish.
+This makes the language a less obvious choice for your command line utilities.
+Luckily, there are few problems that can't be solved with couple of lines of
+Perl \<3
+
+Repconn is a smallish TCP client that slings your code to a running nREPL
+server for evaluation. This way small single-file programs can be made to start
+significantly faster.
+
+See the examples below for more details.
+
+
 # REQUIREMENTS
+
+Unless you use Windows you should have recent enough Perl installed. The code
+uses only core modules so you don't need to install anything from cpan.
+
+You need to define an environment variable for the server port. You can use any
+free port:
+
+    $ export REPCONN_NREPL_PORT=55555
+
+You also need to have a running nREPL server listening on that port. If you use
+Leiningen you can start a headless server like this:
+
+    nohup lein repl :headless :port $REPCONN_NREPL_PORT >/dev/null &
+
 
 # INSTALLATION
 
+Download the repconn script, make it executable and place it in your $PATH. /usr/local/bin/ is a good location.
+
+With curl:
+
+    $ curl https://raw.githubusercontent.com/ajk/clojure-repconn/master/script/repconn -o repconn
+
+    $ chmod 0755 repconn
+
+    $ sudo mv repconn /usr/local/bin/
+
+
 # EXAMPLES
+
+Run code as an argument or from pipe:
+
+    $ repconn '(println "Hello world!")'
+
+    $ echo '(println "Hello" (first argv))' |repconn - Clojure!
+
+
+Run code from a stand-alone file. Pay attention to the shebang line, this is where it gets interesting:
+
+    #!/usr/local/bin/repconn
+    (ns user)
+
+    (println "Hello world!")
+
+
+Now we're cooking with fire! What about stdin and stdout? Let's try a poor version of grep:
+
+
+    #!/usr/local/bin/repconn
+    (ns user)
+
+    ; command-line parameters are automatically
+    ; provided for you in a vector named argv
+
+    (def regex (re-pattern (first argv)))
+
+    (doseq [line (line-seq *in*)]
+      (if (re-find regex line)
+        (println line)))
+
+
+Put that in a file, make it executable and try it out:
+
+    $ chmod 0755 poor-grep
+
+    $ ./poor-grep aardvark < /usr/share/dict/american-english
+
 
 # PROJECT MATURITY AND LIMITATIONS
 
 This is a new project and very much work in progress. A good part of the planned feature set is implemented.
+
+
+
+# SEE ALSO
+
+Alternative projects with similiar goals:
+
+- [Grenchman](http://leiningen.org/grench.html)
+
+- [lein-repls and Cljsh](https://github.com/franks42/lein-repls)
+
 
 # COPYRIGHT
 
