@@ -193,11 +193,11 @@ sub read_code {
 
     return unless $fh;
 
-    my (@sexp, $chunk, $depth, $byte, $prev, $in_string);
+    my (@sexp, $chunk, $depth, $byte, $prev1, $prev2, $in_string);
     while (read $fh, $byte, 1) {
 
         if ($byte eq '"') {
-            $in_string = ! $in_string unless $prev && $prev eq "\\";
+            $in_string = ! $in_string unless $prev1 && $prev1 eq "\\";
             $chunk .= $byte;
         }
         elsif ($byte eq ';' && ! $in_string) {
@@ -208,6 +208,11 @@ sub read_code {
         }
         elsif ($byte eq '(' && ! $in_string) {
             $depth++;
+
+            if ($prev2 eq '#' && $prev1 eq '_') {
+                $chunk .= $prev2 . $prev1;
+            }
+
             $chunk .= $byte;
         }
         elsif ($byte eq ')' && ! $in_string) {
@@ -222,7 +227,8 @@ sub read_code {
             push @sexp, $chunk;
             $chunk = '';
         }
-        $prev = $byte;
+        $prev2 = $prev1;
+        $prev1 = $byte;
     }
 
     return @sexp;
