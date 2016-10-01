@@ -179,16 +179,16 @@ sub read_code {
         # input from file
         open $fh, '<', $input or die "failed to open $input: $!";
     }
+    elsif ($input && $input =~ /^\s*\(.+\)\s*$/) {
+        # input from first argument
+        open $fh, '<', \$input;
+    }
     elsif ( ! $TTY) {
         # input from pipe
         $fh = *STDIN;
 
         # if we read code from stdin, we don't have anything coming in from user
         $TTY = 1;
-    }
-    elsif ($input) {
-        # input from first argument
-        open $fh, '<', \$input;
     }
 
     return unless $fh;
@@ -209,7 +209,7 @@ sub read_code {
         elsif ($byte eq '(' && ! $in_string) {
             $depth++;
 
-            if ($prev2 eq '#' && $prev1 eq '_') {
+            if (defined $prev2 && $prev2 eq '#' && $prev1 eq '_') {
                 $chunk .= $prev2 . $prev1;
             }
 
