@@ -241,6 +241,52 @@ sub read_code {
 
 ##
 
+sub setup_fifos {
+    my ($in_fifo, $out_fifo) = @_;
+
+    foreach ($out_fifo, $in_fifo) {
+        unless (-p $_) { # not a pipe
+            if (-e _) {
+                # but a something else
+                die "won't overwrite $_\n";
+            } else {
+                POSIX::mkfifo($_, 0666) || die "can't mknod $_: $!";
+            }
+        }
+    }
+
+    my $in_pid = fork();
+    die "failed to fork" unless defined $in_pid;
+
+    unless ($in_pid) {
+        unless ( $TTY ) {
+            sysopen(my $fh, $in_fifo, O_WRONLY) || die "can't write $in_fifo: $!";
+            while (<STDIN>) {
+                print $fh $_;
+            }
+            close $fh;
+        }
+        exit(0);
+    }
+
+    my $out_pid = fork();
+    die "failed to fork" unless defined $out_pid;
+
+    unless ($out_pid) {
+        sysopen(my $fh, $out_fifo, O_RDONLY) || die "can't read $out_fifo: $!";
+        while (<$fh>) {
+            last if /^\\cD\s*$/; # look for EOF
+            print $_;
+        }
+        close $fh;
+        exit(0);
+    }
+
+    return ($in_pid, $out_pid);
+}
+
+##
+
 sub nrepl_clone {
     my $res = request({op => 'clone'});
     $res->[0]->{'new-session'};
@@ -288,9 +334,19 @@ sub run {
 
     my @sexp = read_code();
 
-    return unless @sexp;
+    return unless @sexp; # nothing to do
 
     $DEBUG and _log('parsed', scalar @sexp, 's-expressions');
+
+    # Setup STDIN and STDOUT
+
+    my $in_fifo  = '/tmp/repconn-' . $started . '-' . $$ . '-in';
+    my $out_fifo = '/tmp/repconn-' . $started . '-' . $$ . '-out';
+
+    my ($in_pid, $out_pid) = setup_fifos($in_fifo, $out_fifo);
+
+    close STDIN;
+    close STDOUT;
 
     # Start fresh repl session
 
@@ -298,51 +354,6 @@ sub run {
 
     $DEBUG and _log('connected to nREPL server, session id', $sess);
 
-    # Setup STDIN and STDOUT
-
-    my $in_fifo  = '/tmp/repconn-' . $started . '-' . $$ . '-in';
-    my $out_fifo = '/tmp/repconn-' . $started . '-' . $$ . '-out';
-
-    foreach ($out_fifo, $in_fifo) {
-        unless (-p $_) { # not a pipe
-            if (-e _) {
-                # but a something else
-                die "won't overwrite $_\n";
-            } else {
-                POSIX::mkfifo($_, 0666) || die "can't mknod $_: $!";
-            }
-        }
-    }
-
-    my $in_pid = fork();
-    die "failed to fork" unless defined $in_pid;
-
-    unless ($in_pid) {
-        unless ( $TTY ) {
-            sysopen(my $fh, $in_fifo, O_WRONLY) || die "can't write $in_fifo: $!";
-            while (<STDIN>) {
-                print $fh $_;
-            }
-            close $fh;
-        }
-        exit(0);
-    }
-
-    my $out_pid = fork();
-    die "failed to fork" unless defined $out_pid;
-
-    unless ($out_pid) {
-        sysopen(my $fh, $out_fifo, O_RDONLY) || die "can't read $out_fifo: $!";
-        while (<$fh>) {
-            last if /^\\cD\s*$/; # look for EOF
-            print $_;
-        }
-        close $fh;
-        exit(0);
-    }
-
-    close STDIN;
-    close STDOUT;
 
     # Trap ctrl-c
     # Try to interrupt evaluation before exiting
