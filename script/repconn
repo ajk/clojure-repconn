@@ -242,9 +242,9 @@ sub read_code {
 ##
 
 sub setup_fifos {
-    my ($in_fifo, $out_fifo) = @_;
+    my ($in_fifo, $out_fifo, $err_fifo) = @_;
 
-    foreach ($out_fifo, $in_fifo) {
+    foreach ($out_fifo, $in_fifo, $err_fifo) {
         unless (-p $_) { # not a pipe
             if (-e _) {
                 # but a something else
@@ -282,7 +282,21 @@ sub setup_fifos {
         exit(0);
     }
 
-    return ($in_pid, $out_pid);
+    my $err_pid = fork();
+    die "failed to fork" unless defined $err_pid;
+
+    unless ($err_pid) {
+        sysopen(my $fh, $err_fifo, O_RDONLY) || die "can't read $err_fifo: $!";
+        while (<$fh>) {
+            last if /^\\cD\s*$/; # look for EOF
+            chomp;
+            warn $_, "\n";
+        }
+        close $fh;
+        exit(0);
+    }
+
+    return ($in_pid, $out_pid, $err_pid);
 }
 
 ##
@@ -342,8 +356,9 @@ sub run {
 
     my $in_fifo  = '/tmp/repconn-' . $started . '-' . $$ . '-in';
     my $out_fifo = '/tmp/repconn-' . $started . '-' . $$ . '-out';
+    my $err_fifo = '/tmp/repconn-' . $started . '-' . $$ . '-err';
 
-    my ($in_pid, $out_pid) = setup_fifos($in_fifo, $out_fifo);
+    my ($in_pid, $out_pid, $err_pid) = setup_fifos($in_fifo, $out_fifo, $err_fifo);
 
     close STDIN;
     close STDOUT;
@@ -365,7 +380,7 @@ sub run {
         kill 'KILL', $in_pid unless $TTY;
         kill 'KILL', $out_pid;
 
-        unlink($in_fifo, $out_fifo);
+        unlink($in_fifo, $out_fifo, $err_fifo);
 
         die "\n";
     };
@@ -383,12 +398,16 @@ sub run {
     #
     unshift @sexp, "(binding [*in* repconn-stdin]" unless $TTY;
     unshift @sexp, "(binding [*out* repconn-stdout]";
+    unshift @sexp, "(binding [*err* repconn-stderr]";
+    push    @sexp, '(.write *err* "\\\\cD\n")';
     push    @sexp, '(println "\\\\cD")';
+    push    @sexp, ")";
     push    @sexp, ")";
     push    @sexp, ")" unless $TTY;
 
     @sexp = ( join('', @sexp) );
 
+    unshift @sexp, "(def repconn-stderr (clojure.java.io/writer \"$err_fifo\"))";
     unshift @sexp, "(def repconn-stdout (clojure.java.io/writer \"$out_fifo\"))";
     unshift @sexp, "(def repconn-stdin  (clojure.java.io/reader \"$in_fifo\"))" unless $TTY;
     unshift @sexp, "(require 'clojure.java.io)";
@@ -398,6 +417,7 @@ sub run {
     my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
     unshift @sexp, '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
 
+    push @sexp, "(.close repconn-stderr)";
     push @sexp, "(.close repconn-stdout)";
     push @sexp, "(.close repconn-stdin)" unless $TTY;
 
@@ -414,8 +434,9 @@ sub run {
 
     waitpid($in_pid, 0);
     waitpid($out_pid, 0);
+    waitpid($err_pid, 0);
 
-    unlink($in_fifo, $out_fifo);
+    unlink($in_fifo, $out_fifo, $err_fifo);
 
     nrepl_close($sess);
 
