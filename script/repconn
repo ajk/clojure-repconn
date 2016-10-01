@@ -25,7 +25,7 @@ use Fcntl;
 use POSIX;
 use IO::Socket;
 use Encode qw(encode decode);
-use Time::HiRes qw(time ualarm);
+use Time::HiRes qw(time);
 
 use Data::Dumper;
 
@@ -38,11 +38,13 @@ my $TTY = -t STDIN;
 
 ##
 
-my $started = time();
+my $STARTED = time();
+
 sub _log {
-    my $now = time - $started;
+    my $now = time - $STARTED;
     warn $now, "\t", join(' ', @_), "\n";
 }
+
 
 sub request {
     my ($payload, $expected) = @_;
@@ -57,7 +59,11 @@ sub request {
 
     $sock->autoflush(1);
 
+    ##
+
     print $sock bencode($payload);
+
+    ##
 
     my $response = [];
 
@@ -68,10 +74,10 @@ sub request {
 
         while (1) {
 
-            alarm $poll_timeout if $poll_timeout;
-
             # First time we block until we can start parsing response.
             # After that we wait for $poll_timeout
+            alarm $poll_timeout if $poll_timeout;
+
             read $sock, my $byte, 1;
 
             # rest shouldn't take more than 30 seconds
@@ -93,7 +99,7 @@ sub request {
         }
     };
     if ($@) {
-        die $@ unless $@ eq "alarm\n";   # propagate unexpected errors
+        die $@ unless $@ eq "alarm\n"; # propagate unexpected errors
     }
 
     $sock->shutdown(2);
@@ -104,15 +110,14 @@ sub request {
 }
 
 
-# Simplified version, we only need to encode hashes
+# Simplified bencode, we only need to encode hashes
 sub bencode {
     my ($in) = @_;
 
     my $out = '';
-    foreach (sort keys %$in) {
-        my $v = $in->{$_};
-        $v = $$v if ref $v eq 'SCALAR';
-        $out .= length($_)        . ':' . $_;
+    foreach my $k (sort keys %$in) {
+        my $v = $in->{$k};
+        $out .= length($k) . ':' . $k;
         $out .= length($v) . ':' . $v;
     }
     return 'd' . $out . 'e';
@@ -217,7 +222,6 @@ sub read_code {
             if (defined $prev2 && $prev2 eq '#' && $prev1 eq '_') {
                 $chunk .= $prev2 . $prev1;
             }
-
             $chunk .= $byte;
         }
         elsif ($byte eq ')' && ! $in_string) {
@@ -303,17 +307,7 @@ sub setup_fifos {
 
 sub nrepl_clone {
     my $res = request({op => 'clone'});
-    $res->[0]->{'new-session'};
-}
-
-sub nrepl_close {
-    my ($sess) = @_;
-    request({op => 'close', session => $sess});
-}
-
-sub nrepl_input {
-    my ($sess, $input) = @_;
-    request({op => 'stdin', session => $sess, stdin => $input});
+    $res->[0]->{'new-session'} or die "failed to start new nREPL session";
 }
 
 sub nrepl_eval {
@@ -322,8 +316,6 @@ sub nrepl_eval {
     my $res = request({op => 'eval', session => $sess, code => encode('UTF-8', $code)}, $multi);
 
     foreach my $r (@$res) {
-
-        #TODO better stack trace formatting
         if (defined $r->{ex}) {
             my $tr = nrepl_trace($sess);
             warn $tr->[0]->{class} . ' ' . $tr->[0]->{message} . "\n";
@@ -342,6 +334,11 @@ sub nrepl_sigint {
     nrepl_close($sess);
 }
 
+sub nrepl_close {
+    my ($sess) = @_;
+    request({op => 'close', session => $sess});
+}
+
 ##
 
 sub run {
@@ -354,9 +351,9 @@ sub run {
 
     # Setup STDIN and STDOUT
 
-    my $in_fifo  = '/tmp/repconn-' . $started . '-' . $$ . '-in';
-    my $out_fifo = '/tmp/repconn-' . $started . '-' . $$ . '-out';
-    my $err_fifo = '/tmp/repconn-' . $started . '-' . $$ . '-err';
+    my $in_fifo  = '/tmp/repconn-' . $STARTED . '-' . $$ . '-in';
+    my $out_fifo = '/tmp/repconn-' . $STARTED . '-' . $$ . '-out';
+    my $err_fifo = '/tmp/repconn-' . $STARTED . '-' . $$ . '-err';
 
     my ($in_pid, $out_pid, $err_pid) = setup_fifos($in_fifo, $out_fifo, $err_fifo);
 
@@ -368,7 +365,6 @@ sub run {
     my $sess = nrepl_clone();
 
     $DEBUG and _log('connected to nREPL server, session id', $sess);
-
 
     # Trap ctrl-c
     # Try to interrupt evaluation before exiting
