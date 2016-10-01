@@ -45,7 +45,9 @@ sub _log {
 }
 
 sub request {
-    my ($payload, $multi) = @_;
+    my ($payload, $expected) = @_;
+
+    $expected ||= 1;
 
     my $sock = IO::Socket::INET->new(
         Proto   => "tcp",
@@ -66,8 +68,7 @@ sub request {
 
         while (1) {
 
-            #FIXME better method to detect when server is done sending responses
-            ualarm $poll_timeout if $poll_timeout;
+            alarm $poll_timeout if $poll_timeout;
 
             # First time we block until we can start parsing response.
             # After that we wait for $poll_timeout
@@ -78,13 +79,17 @@ sub request {
             my $msg = bdecode($sock, $byte);
             alarm 0;
 
-            # if we are reading stdout, give more time
-            $poll_timeout = (ref $msg eq 'HASH' && defined $msg->{out}) ? 0 : 10000; #microseconds
+            $DEBUG and _log(Dumper $msg);
+
+            $poll_timeout = 1;
 
             push @$response, $msg;
 
+            # exception, bail out
+            last if defined $msg->{ex};
+
             # stop here unless we expect multipart response
-            last unless $multi;
+            last unless --$expected;
         }
     };
     if ($@) {
@@ -257,7 +262,6 @@ sub nrepl_eval {
     my $res = request({op => 'eval', session => $sess, code => encode('UTF-8', $code)}, $multi);
 
     foreach my $r (@$res) {
-        print $r->{out} if defined $r->{out};
 
         #TODO better stack trace formatting
         if (defined $r->{ex}) {
@@ -394,7 +398,7 @@ sub run {
 
     foreach (@sexp) {
         $DEBUG and warn $_, "\n";
-        nrepl_eval($sess, $_);
+        nrepl_eval($sess, $_, 3);
     }
 
     waitpid($in_pid, 0);
