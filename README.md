@@ -37,7 +37,7 @@ free port:
 You also need to have a running nREPL server listening on that port. If you use
 Leiningen you can start a headless server like this:
 
-    nohup lein repl :headless :port $REPCONN_NREPL_PORT >/dev/null &
+    $ nohup lein repl :headless :port $REPCONN_NREPL_PORT >/dev/null &
 
 
 # INSTALLATION
