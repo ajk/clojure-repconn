@@ -64,47 +64,65 @@ Run code as an argument or from pipe:
 
 Run code from a stand-alone file. Pay attention to the shebang line, this is where it gets interesting:
 
-    #!/usr/local/bin/repconn
-    (ns user)
+```clojure
 
-    (println "Hello world!")
+#!/usr/local/bin/repconn
+(ns user)
+
+(println "Hello world!")
+```
+
+Save the snippet above in a file called hello.clj and run it:
+
+    # pass the filename as argument...
+    $ repconn hello.clj
+
+    # ...or run it as an executable
+    $ chmod 0755 hello.clj
+
+    $ ./hello.clj
 
 
 Now we're cooking with fire! What about stdin and stdout? Let's try a poor version of grep:
 
 
-    #!/usr/local/bin/repconn
-    (ns user)
+```clojure
 
-    ; command-line parameters are automatically
-    ; provided for you in a vector named argv
+#!/usr/local/bin/repconn
+(ns user)
 
-    (def regex (re-pattern (first argv)))
+; command-line parameters are automatically
+; provided for you in a vector named argv
 
-    (doseq [line (line-seq *in*)]
-      (if (re-find regex line)
-        (println line)))
+(def regex (re-pattern (first argv)))
+
+(doseq [line (line-seq *in*)]
+  (if (re-find regex line)
+    (println line)))
+```
 
 
 Put that in a file, make it executable and try it out:
 
-    $ chmod 0755 poor-grep
 
     $ ./poor-grep aardvark < /usr/share/dict/american-english
 
 
 Requiring dependencies works as you would expect:
 
-    #!/usr/local/bin/repconn
-    (ns user
-      (:require [clojure.data.json  :as json]
-                [org.httpkit.client :as http]))
+```clojure
 
-    (-> @(http/get "http://jsonip.com")
-        :body
-        json/read-str
-        (get "ip")
-        println)
+#!/usr/local/bin/repconn
+(ns user
+  (:require [clojure.data.json  :as json]
+            [org.httpkit.client :as http]))
+
+(-> @(http/get "http://jsonip.com")
+    :body
+    json/read-str
+    (get "ip")
+    println)
+```
 
 
 # PROJECT MATURITY AND LIMITATIONS
