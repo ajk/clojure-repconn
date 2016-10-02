@@ -60,6 +60,8 @@ sub request {
     $sock->autoflush(1);
 
     ##
+    $DEBUG and _log('writing request');
+    $DEBUG and warn Dumper($payload), "\n";
 
     print $sock bencode($payload);
 
@@ -105,6 +107,8 @@ sub request {
     $sock->shutdown(2);
 
     close $sock;
+
+    $DEBUG and _log('got response');
 
     return $response;
 }
@@ -381,13 +385,19 @@ sub run {
         die "\n";
     };
 
-    # Evaluate s-expressions
+    # Start evaluating s-expressions
 
     my $ns = shift @sexp;
     unless ($ns =~ /^\(\s*ns /) {
         unshift @sexp, $ns;
         $ns = "(ns user)";
     }
+
+    # Setup argument list
+
+    my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
+    unshift @sexp, '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
+
 
     # Pass our named pipes and argv to nREPL
     # if $TTY == 1 we don't bind *in*
@@ -406,25 +416,19 @@ sub run {
     unshift @sexp, "(def repconn-stderr (clojure.java.io/writer \"$err_fifo\"))";
     unshift @sexp, "(def repconn-stdout (clojure.java.io/writer \"$out_fifo\"))";
     unshift @sexp, "(def repconn-stdin  (clojure.java.io/reader \"$in_fifo\"))" unless $TTY;
-    unshift @sexp, "(require 'clojure.java.io)";
 
-    # Setup argument list
+    my $close = "(.close repconn-stderr)(.close repconn-stdout)";
+    $close   .= "(.close repconn-stdin)" unless $TTY;
+    push @sexp, $close;
 
-    my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
-    unshift @sexp, '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
-
-    push @sexp, "(.close repconn-stderr)";
-    push @sexp, "(.close repconn-stdout)";
-    push @sexp, "(.close repconn-stdin)" unless $TTY;
-
-    unshift @sexp, $ns;
+    # save some time if we can  skip namespace declaration
+    unshift @sexp, $ns unless $ns eq '(ns user)';
 
     $DEBUG and _log('setup done');
 
     # Execute!
 
     foreach (@sexp) {
-        $DEBUG and warn $_, "\n";
         nrepl_eval($sess, $_, 3);
     }
 
