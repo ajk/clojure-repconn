@@ -93,6 +93,20 @@ Put that in a file, make it executable and try it out:
     $ ./poor-grep aardvark < /usr/share/dict/american-english
 
 
+Requiring dependencies works as you would expect:
+
+    #!/usr/local/bin/repconn
+    (ns user
+      (:require [clojure.data.json  :as json]
+                [org.httpkit.client :as http]))
+
+    (-> @(http/get "http://jsonip.com")
+        :body
+        json/read-str
+        (get "ip")
+        println)
+
+
 # PROJECT MATURITY AND LIMITATIONS
 
 This is a new project and very much work in progress. A good part of the planned feature set is implemented.
