@@ -74,7 +74,7 @@ sub request {
     eval {
         local $SIG{ALRM} = sub { die "alarm\n" };
 
-        while (1) {
+        while ($expected--) {
 
             # First time we block until we can start parsing response.
             # After that we wait for $poll_timeout
@@ -95,9 +95,6 @@ sub request {
 
             # exception, bail out
             last if defined $msg->{ex};
-
-            # stop here unless we expect multipart response
-            last unless --$expected;
         }
     };
     if ($@) {
@@ -322,7 +319,7 @@ sub nrepl_eval {
     foreach my $r (@$res) {
         if (defined $r->{ex}) {
             my $tr = nrepl_trace($sess);
-            warn $tr->[0]->{class} . ' ' . $tr->[0]->{message} . "\n";
+            die $tr->[0]->{class} . ' ' . $tr->[0]->{message} . "\n";
         }
     }
 }
@@ -335,7 +332,6 @@ sub nrepl_trace {
 sub nrepl_sigint {
     my ($sess) = @_;
     request({op => 'interrupt', session => $sess});
-    nrepl_close($sess);
 }
 
 sub nrepl_close {
@@ -353,6 +349,12 @@ sub run {
 
     $DEBUG and _log('parsed', scalar @sexp, 's-expressions');
 
+    # Start fresh repl session
+
+    my $sess = nrepl_clone();
+
+    $DEBUG and _log('connected to nREPL server, session id', $sess);
+
     # Setup STDIN and STDOUT
 
     my $in_fifo  = '/tmp/repconn-' . $STARTED . '-' . $$ . '-in';
@@ -364,27 +366,6 @@ sub run {
     close STDIN;
     close STDOUT;
 
-    # Start fresh repl session
-
-    my $sess = nrepl_clone();
-
-    $DEBUG and _log('connected to nREPL server, session id', $sess);
-
-    # Trap ctrl-c
-    # Try to interrupt evaluation before exiting
-
-    $SIG{INT} = sub {
-
-        nrepl_sigint($sess);
-
-        kill 'KILL', $in_pid unless $TTY;
-        kill 'KILL', $out_pid;
-
-        unlink($in_fifo, $out_fifo, $err_fifo);
-
-        die "\n";
-    };
-
     # Start evaluating s-expressions
 
     my $ns = shift @sexp;
@@ -393,44 +374,60 @@ sub run {
         $ns = "(ns user)";
     }
 
-    # Setup argument list
-
-    my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
-    unshift @sexp, '(def argv ['. join(' ', map { qq("$_") } @out) .'])';
-
-
     # Pass our named pipes and argv to nREPL
     # if $TTY == 1 we don't bind *in*
-    #
-    unshift @sexp, "(binding [*in* repconn-stdin]" unless $TTY;
+
+    unshift @sexp, "(binding [*in* repconn-stdin]"   unless $TTY;
     unshift @sexp, "(binding [*out* repconn-stdout]";
     unshift @sexp, "(binding [*err* repconn-stderr]";
-    push    @sexp, '(.write *err* "\\\\cD\n")';
-    push    @sexp, '(println "\\\\cD")';
-    push    @sexp, ")";
-    push    @sexp, ")";
-    push    @sexp, ")" unless $TTY;
 
-    @sexp = ( join('', @sexp) );
+    unshift @sexp, "]";
 
-    unshift @sexp, "(def repconn-stderr (clojure.java.io/writer \"$err_fifo\"))";
-    unshift @sexp, "(def repconn-stdout (clojure.java.io/writer \"$out_fifo\"))";
-    unshift @sexp, "(def repconn-stdin  (clojure.java.io/reader \"$in_fifo\"))" unless $TTY;
+    unshift @sexp, "repconn-stderr (clojure.java.io/writer \"$err_fifo\")";
+    unshift @sexp, "repconn-stdout (clojure.java.io/writer \"$out_fifo\")";
+    unshift @sexp, "repconn-stdin  (clojure.java.io/reader \"$in_fifo\")"  unless $TTY;
 
-    my $close = "(.close repconn-stderr)(.close repconn-stdout)";
-    $close   .= "(.close repconn-stdin)" unless $TTY;
-    push @sexp, $close;
+    my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
+    unshift @sexp, 'argv ['. join(' ', map { qq("$_") } @out) .']';
 
-    # save some time if we can  skip namespace declaration
-    unshift @sexp, $ns unless $ns eq '(ns user)';
+    unshift @sexp, "[";
+
+    push @sexp, ")";
+    push @sexp, ")";
+    push @sexp, ")" unless $TTY;
+
+    push @sexp, "(.close repconn-stderr)";
+    push @sexp, "(.close repconn-stdout)";
+    push @sexp, "(.close repconn-stdin)"  unless $TTY;
 
     $DEBUG and _log('setup done');
 
     # Execute!
 
-    foreach (@sexp) {
-        nrepl_eval($sess, $_, 3);
+    eval {
+        # Trap ctrl-c
+        # Try to interrupt evaluation before exiting
+
+        local $SIG{INT} = sub {
+            nrepl_sigint($sess);
+            die "SIGINT\n";
+        };
+
+        # save some time if we can  skip namespace declaration
+        nrepl_eval($sess, $ns, 3) unless $ns eq '(ns user)';
+
+        nrepl_eval($sess, join("\n", "(let", @sexp, ")"), 3);
+    };
+
+    my $e = $@;
+
+    if ($e) {
+        kill 'KILL', $in_pid unless $TTY;
+        kill 'KILL', $out_pid;
+        kill 'KILL', $err_pid;
     }
+
+    # Clean up
 
     waitpid($in_pid, 0);
     waitpid($out_pid, 0);
@@ -441,6 +438,8 @@ sub run {
     nrepl_close($sess);
 
     $DEBUG and _log('finished');
+
+    die $e if $e;
 }
 
 run();
