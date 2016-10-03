@@ -114,16 +114,15 @@ Requiring dependencies works as you would expect:
 
 #!/usr/local/bin/repconn
 (ns user
-  (:require [clojure.data.json  :as json]
+  (:require [clojure.data.json :as json]
             [org.httpkit.client :as http]))
 
 (-> @(http/get "http://jsonip.com")
     :body
-    json/read-str
-    (get "ip")
+    (json/read-str :key-fn keyword)
+    :ip
     println)
 ```
-
 
 # PROJECT MATURITY AND LIMITATIONS
 
