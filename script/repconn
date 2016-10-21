@@ -204,7 +204,7 @@ sub read_code {
 
     return unless $fh;
 
-    my (@sexp, $chunk, $depth, $byte, $prev1, $prev2, $in_string);
+    my (@sexp, $chunk, $depth, $byte, $prev1, $prev2, $in_string, %balanced);
     while (read $fh, $byte, 1) {
 
         if ($byte eq '"') {
@@ -239,6 +239,21 @@ sub read_code {
         }
         $prev2 = $prev1;
         $prev1 = $byte;
+
+        unless ($in_string) {
+            $balanced{'('} += 1 if $byte eq '(';
+            $balanced{'('} -= 1 if $byte eq ')';
+
+            $balanced{'['} += 1 if $byte eq '[';
+            $balanced{'['} -= 1 if $byte eq ']';
+
+            $balanced{'{'} += 1 if $byte eq '{';
+            $balanced{'{'} -= 1 if $byte eq '}';
+        }
+    }
+
+    if ($in_string || grep {$_ != 0} values %balanced) {
+        die "parse error";
     }
 
     return @sexp;
