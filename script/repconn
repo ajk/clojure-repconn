@@ -45,10 +45,11 @@ sub _log {
     warn $now, "\t", join(' ', @_), "\n";
 }
 
-
+# Open a socket, send out request and read response.
 sub request {
     my ($payload, $expected) = @_;
 
+    # how many bencoded responses we expect to read for this request
     $expected ||= 1;
 
     my $sock = IO::Socket::INET->new(
@@ -76,9 +77,11 @@ sub request {
 
         while ($expected--) {
 
-            # First time we block until we can start parsing response.
-            # After that we wait for $poll_timeout
+            # First time we block until we can start parsing response...
             alarm $poll_timeout if $poll_timeout;
+
+            # ...after that we wait for $poll_timeout
+            $poll_timeout = 1;
 
             read $sock, my $byte, 1;
 
@@ -88,8 +91,6 @@ sub request {
             alarm 0;
 
             $DEBUG and _log(Dumper $msg);
-
-            $poll_timeout = 1;
 
             push @$response, $msg;
 
@@ -110,6 +111,8 @@ sub request {
     return $response;
 }
 
+# nREPL uses Bencode encoding for input and output
+# see https://en.wikipedia.org/wiki/Bencode
 
 # Simplified bencode, we only need to encode hashes
 sub bencode {
@@ -124,14 +127,15 @@ sub bencode {
     return 'd' . $out . 'e';
 }
 
-
 sub bdecode {
     my ($stream, $byte) = @_;
 
-    # skip reading here if we have peeked the next byte
+    # read next byte in stream unless we already have it
     unless (defined $byte) {
         read $stream, $byte, 1;
     }
+
+    # see what comes next, process it, recurse if necessary
 
     if ($byte eq 'd') { # HASH
         my $chunk = {};
@@ -181,6 +185,7 @@ sub bdecode {
 }
 
 
+# Handle clojure code input from different sources.
 sub read_code {
 
     my $input = shift @ARGV;
@@ -204,36 +209,45 @@ sub read_code {
 
     return unless $fh;
 
+    # Perl sexps parser, just for shits and giggles.
+
     my (@sexp, $chunk, $depth, $byte, $prev1, $prev2, $in_string, %balanced);
     while (read $fh, $byte, 1) {
 
         if ($byte eq '"') {
+            # beginning or end of string
             $in_string = ! $in_string unless $prev1 && $prev1 eq "\\";
             $chunk .= $byte;
         }
         elsif ($byte eq ';' && ! $in_string) {
+            # comment
             while (1) {
                 read($fh, $byte, 1);
                 last if $byte eq "\n";
             }
         }
         elsif ($byte eq '(' && ! $in_string) {
+            # code!
             $depth++;
 
+            # special case: reader macro, ignore next form
             if (defined $prev2 && $prev2 eq '#' && $prev1 eq '_') {
                 $chunk .= $prev2 . $prev1;
             }
             $chunk .= $byte;
         }
         elsif ($byte eq ')' && ! $in_string) {
+            # code!
             $depth--;
             $chunk .= $byte;
         }
         elsif ($depth) {
+            # code!
             $chunk .= $byte;
         }
 
         if ($chunk && ! $depth) {
+            # complete s-expression
             push @sexp, $chunk;
             $chunk = '';
         }
@@ -261,6 +275,7 @@ sub read_code {
 
 ##
 
+# Input and output are handled with forks and named pipes.
 sub setup_fifos {
     my ($in_fifo, $out_fifo, $err_fifo) = @_;
 
@@ -319,7 +334,8 @@ sub setup_fifos {
     return ($in_pid, $out_pid, $err_pid);
 }
 
-##
+
+# Helper functions for nREPL client operations.
 
 sub nrepl_clone {
     my $res = request({op => 'clone'});
@@ -354,7 +370,8 @@ sub nrepl_close {
     request({op => 'close', session => $sess});
 }
 
-##
+
+# Go go go !!
 
 sub run {
 
@@ -402,6 +419,7 @@ sub run {
     unshift @sexp, "repconn-stdout (clojure.java.io/writer \"$out_fifo\")";
     unshift @sexp, "repconn-stdin  (clojure.java.io/reader \"$in_fifo\")"  unless $TTY;
 
+    # set up argv
     my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
     unshift @sexp, 'argv ['. join(' ', map { qq("$_") } @out) .']';
 
@@ -422,18 +440,19 @@ sub run {
     eval {
         # Trap ctrl-c
         # Try to interrupt evaluation before exiting
-
         local $SIG{INT} = sub {
             nrepl_sigint($sess);
             die "SIGINT\n";
         };
 
-        # save some time if we can  skip namespace declaration
+        # send namespace declaration, save some time if we can skip it
         nrepl_eval($sess, $ns, 3) unless $ns eq '(ns user)';
 
+        # wrap the code in a let form with our special sauce and evaluate it
         nrepl_eval($sess, join("\n", "(let", @sexp, ")"), 3);
     };
 
+    # keep this for later
     my $e = $@;
 
     if ($e) {

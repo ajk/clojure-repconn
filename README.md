@@ -93,7 +93,6 @@ Now we're cooking with fire! What about stdin and stdout? Let's try a poor versi
 
 ; command-line parameters are automatically
 ; provided for you in a vector named argv
-
 (def regex (re-pattern (first argv)))
 
 (doseq [line (line-seq *in*)]
@@ -124,9 +123,13 @@ Requiring dependencies works as you would expect:
     println)
 ```
 
-# PROJECT MATURITY AND LIMITATIONS
+# PROJECT MATURITY
 
-This is a new project and very much work in progress. A good part of the planned feature set is implemented.
+Although this is a new project it does what it says on the tin. I would suggest
+testing thoroughly before mission-critical use.
+
+Most of the originally planned feature set is implemented but please let me
+know if you have great ideas.
 
 
 
