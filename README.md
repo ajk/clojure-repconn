@@ -42,7 +42,8 @@ Leiningen you can start a headless server like this:
 
 # INSTALLATION
 
-Download the repconn script, make it executable and place it in your $PATH. /usr/local/bin/ is a good location.
+Download the [repconn](https://github.com/ajk/clojure-repconn/blob/master/script/repconn) script,
+make it executable and place it in your $PATH. /usr/local/bin/ is a good location.
 
 With curl:
 
