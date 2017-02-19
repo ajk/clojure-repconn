@@ -406,37 +406,38 @@ sub run {
         $ns = "(ns user)";
     }
 
-    # Pass our named pipes and argv to nREPL
+    # Pass our named pipes and command line args to nREPL
     # if $TTY == 1 we don't bind *in*
 
     unshift @sexp, "(binding [*in* repconn-stdin]"   unless $TTY;
     unshift @sexp, "(binding [*out* repconn-stdout]";
     unshift @sexp, "(binding [*err* repconn-stderr]";
 
-    unshift @sexp, "]";
+    unshift @sexp, "(with-open [repconn-stderr (clojure.java.io/writer \"$err_fifo\")]";
+    unshift @sexp, "(with-open [repconn-stdout (clojure.java.io/writer \"$out_fifo\")]";
+    unshift @sexp, "(with-open [repconn-stdin  (clojure.java.io/reader \"$in_fifo\")]"  unless $TTY;
 
-    unshift @sexp, "repconn-stderr (clojure.java.io/writer \"$err_fifo\")";
-    unshift @sexp, "repconn-stdout (clojure.java.io/writer \"$out_fifo\")";
-    unshift @sexp, "repconn-stdin  (clojure.java.io/reader \"$in_fifo\")"  unless $TTY;
+    # Set up *command-line-args*
+    # Early version of this script used argv symbol so add that too.
+    unshift @sexp, '(let [argv (vec *command-line-args*)]';
+    push @sexp, ")"; # close let argv
 
-    # set up argv
     my @out = map { s/(?<!\\)"/\\"/; decode('UTF-8', $_) } @ARGV;
-    unshift @sexp, 'argv ['. join(' ', map { qq("$_") } @out) .']';
+    unshift @sexp, '(binding [*command-line-args* \'('. join(' ', map { qq("$_") } @out) .')]';
+    push @sexp, ")"; # close binding *command-line-args*
 
-    unshift @sexp, "[";
+    push @sexp, ")";             # close binding *err*
+    push @sexp, ")";             # close binding *out*
+    push @sexp, ")" unless $TTY; # close binding *in*
 
-    push @sexp, ")";
-    push @sexp, ")";
-    push @sexp, ")" unless $TTY;
-
-    push @sexp, "(.close repconn-stderr)";
-    push @sexp, "(.close repconn-stdout)";
-    push @sexp, "(.close repconn-stdin)"  unless $TTY;
+    push @sexp, ")";             # close with-open repconn-stderr
+    push @sexp, ")";             # close with-open repconn-stdout
+    push @sexp, ")" unless $TTY; # close with-open repconn-stdin
 
     $DEBUG and _log('setup done');
 
     # Execute!
-
+    #
     eval {
         # Trap ctrl-c
         # Try to interrupt evaluation before exiting
@@ -448,8 +449,7 @@ sub run {
         # send namespace declaration, save some time if we can skip it
         nrepl_eval($sess, $ns, 3) unless $ns eq '(ns user)';
 
-        # wrap the code in a let form with our special sauce and evaluate it
-        nrepl_eval($sess, join("\n", "(let", @sexp, ")"), 3);
+        nrepl_eval($sess, join("\n", @sexp), 3);
     };
 
     # keep this for later
