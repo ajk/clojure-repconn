@@ -59,7 +59,8 @@ Run code as an argument or from pipe:
 
     $ repconn '(println "Hello world!")'
 
-    $ echo '(println "Hello" (first argv))' |repconn - Clojure!
+    $ echo '(println "Hello" (first *command-line-args*))' |repconn - Clojure!
+
 
 
 Run code from a stand-alone file. Pay attention to the shebang line, this is where it gets interesting:
@@ -91,9 +92,9 @@ Now we're cooking with fire! What about stdin and stdout? Let's try a poor versi
 #!/usr/local/bin/repconn
 (ns user)
 
-; command-line parameters are automatically
-; provided for you in a vector named argv
-(def regex (re-pattern (first argv)))
+; Command-line parameters can be accessed with *command-line-args*
+; (For legacy reasons they are also available in a vector named argv)
+(def regex (re-pattern (first *command-line-args*)))
 
 (doseq [line (line-seq *in*)]
   (if (re-find regex line)
@@ -116,7 +117,7 @@ Requiring dependencies works as you would expect:
   (:require [clojure.data.json :as json]
             [org.httpkit.client :as http]))
 
-(-> @(http/get "http://jsonip.com")
+(-> @(http/get "http://ip.jsontest.com/")
     :body
     (json/read-str :key-fn keyword)
     :ip
@@ -144,7 +145,7 @@ Alternative projects with similiar goals:
 
 # COPYRIGHT
 
-Copyright 2016 Antti Koskinen
+Copyright 2016, 2017 Antti Koskinen
 
 # LICENSE
 
